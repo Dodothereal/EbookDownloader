@@ -292,15 +292,24 @@ function westermann(email, passwd, deleteAllOldTempImages) {
             }).then(res => {
                 var parsedHTML = HTMLParser.parse(res.data);
                 var form = parsedHTML.querySelector("form");
+                // mein.westermann.de is a Laravel app: the login form now carries a CSRF
+                // `_token` hidden field, and POSTing without it returns HTTP 419 ("page
+                // expired"). Echo every hidden input the form ships (so `_token` rides
+                // along), then set the credentials.
+                var formData = {};
+                form.querySelectorAll("input").forEach(input => {
+                    var name = input.getAttribute("name");
+                    if (name) formData[name] = input.getAttribute("value") || "";
+                });
+                formData["account"] = email;
+                formData["password"] = passwd;
+                formData["remember"] = 0;
                 axiosInstance({
-                    url: "https://mein.westermann.de" + form.getAttribute("action"),
+                    // The form action is now an absolute mein.westermann.de URL; resolve it
+                    // against the origin instead of concatenating (which doubled the host).
+                    url: new URL(form.getAttribute("action"), "https://mein.westermann.de").href,
                     method: "post",
-                    data: qs.stringify({
-                        "account": email,
-                        "password": passwd,
-                        "remember": 0,
-                        "action": "login",
-                    }),
+                    data: qs.stringify(formData),
                     headers: {
                         "Content-Type": "application/x-www-form-urlencoded",
                     },

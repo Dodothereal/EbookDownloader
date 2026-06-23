@@ -29,6 +29,10 @@ const { zeroPad } = require('../utils')
 
 axiosCookieJarSupport(axios);
 
+// Cornelsen decommissioned mein.cornelsen.de/bibliothek/api (now a dead nginx 502)
+// and moved the library GraphQL (same `licenses` / `startProduct` operations) here.
+const GRAPHQL_ENDPOINT = "https://api.lernen.cornelsen.de/v2/products/graphql";
+
 function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
     console.log("Logging in and getting Book list")
     const cookieJar = new tough.CookieJar();
@@ -43,7 +47,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
     function get_using_id_token(id_token) {
         axiosInstance({
             method: 'post',
-            url: 'https://mein.cornelsen.de/bibliothek/api',
+            url: GRAPHQL_ENDPOINT,
             headers: {
                 "authorization": "Bearer " + id_token,//cookieJar.toJSON().cookies.find(c => c.key == "cornelsen-jwt").value,
                 "content-type": "application/json",
@@ -71,7 +75,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                 var productId = values.license?.usageProduct?.id || values.license?.salesProduct?.id;
                 axiosInstance({
                     method: 'post',
-                    url: 'https://mein.cornelsen.de/bibliothek/api',
+                    url: GRAPHQL_ENDPOINT,
                     headers: {
                         "authorization": "Bearer " + id_token, //cookieJar.toJSON().cookies.find(c => c.key == "cornelsen-jwt").value,
                         "content-type": "application/json",
@@ -578,17 +582,33 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                 url: 'https://www.cornelsen.de/shop/ccustomer/oauth/login/?afterAuthUrl=https%3A%2F%2Fwww.cornelsen.de%2F',
             }).then(res => {
                 var parsed = HTMLParser.parse(res.data);
+                // The id.cornelsen.de login is now a JSF form whose field ids are
+                // server-generated (e.g. cardContent:contentForm:loginForm:form:username:
+                // cvds_input:input) and it carries a javax.faces.ViewState hidden field, so
+                // the old #loginForm / loginForm:username selectors no longer match. Select
+                // the form structurally, fill the username/password fields by name, and echo
+                // every hidden input JSF requires (ViewState, the form-id field, submit).
+                var loginForm = parsed.querySelector('form[action*="login.htm"]')
+                    || parsed.querySelector("#loginForm")
+                    || parsed.querySelectorAll("form").find(f => f.querySelector('input[type="password"]'));
                 var loginFormData = {};
-                parsed.querySelector("#loginForm").querySelectorAll("input").forEach(i => {
-                    loginFormData[i.getAttribute("name")] = i.getAttribute("value") || "";
+                var usernameKey, passwordKey;
+                loginForm.querySelectorAll("input").forEach(i => {
+                    var name = i.getAttribute("name");
+                    if (!name) return;
+                    loginFormData[name] = i.getAttribute("value") || "";
+                    var type = (i.getAttribute("type") || "").toLowerCase();
+                    if (type == "password" || /password/i.test(name)) passwordKey = name;
+                    else if (type == "email" || /username|email/i.test(name)) usernameKey = name;
                 })
-                loginFormData["loginForm:username"] = email;
-                loginFormData["loginForm:password"] = passwd;
+                loginFormData[usernameKey] = email;
+                loginFormData[passwordKey] = passwd;
 
                 axiosInstance({
                     method: 'post',
-                    url: 'https://id.cornelsen.de/oxauth/login.htm',
-                    data: qs.stringify(loginFormData)
+                    url: new URL(loginForm.getAttribute("action") || "/oxauth/login.htm", "https://id.cornelsen.de/").href,
+                    data: qs.stringify(loginFormData),
+                    headers: { "content-type": "application/x-www-form-urlencoded" },
                 }).then(res => {
                     console.log("Logged in successfully")
                     /*axiosInstance({
@@ -611,7 +631,11 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                     url: `https://mein.cornelsen.de/766.${res.data.match(/766\s*:\s*"(\w*)"\s*,/)[1]}.js`
                                 }).then(res => {
                                     var clientId = res.data.match(/authority\s*:\s*"https:\/\/id.cornelsen.de\/"\s*,\s*clientId\s*:\s*"(.*?)"/m)[1];*/
-                                    var clientId = "@!38C4.659F.8000.3A79!0001!7F12.03E3!0008!E3BA.CEBF.4551.8EBD" //from windows desktop app
+                                    // The new library API (api.lernen.cornelsen.de) validates the token
+                                    // audience, so we must authenticate as the mein.cornelsen.de SPA client
+                                    // (captured from its live OIDC flow). The old Unterrichtsmanager desktop
+                                    // client's token is rejected (401) by the new API.
+                                    var clientId = "@!38C4.659F.8000.3A79!0001!7F12.03E3!0008!EC22.422D.7E51.7DE3" //mein.cornelsen.de SPA client
                                     //console.log("Got client id: " + clientId)
                                     var code_verifier = crypto.randomBytes(48).toString('hex');
                                     var nonce = crypto.randomBytes(16).toString('hex')
@@ -619,10 +643,10 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                         method: "get",
                                         url: "https://id.cornelsen.de/oxauth/restv1/authorize",
                                         params: {
-                                            scope: "openid user_name roles cv_sap_kdnr cv_schule profile email meta inum",
+                                            scope: "openid user_name roles cv_sap_kdnr cv_schule profile email meta inum tenant_id",
                                             response_type: "code",
                                             response_mode: "query",
-                                            redirect_uri: "https://unterrichtsmanager.cornelsen.de/index.html",
+                                            redirect_uri: "https://mein.cornelsen.de",
                                             client_id: clientId,
                                             state: crypto.randomBytes(16).toString('hex'),
                                             code_challenge: crypto.createHash('sha256').update(code_verifier).digest().toString('base64url'),
@@ -645,8 +669,7 @@ function cornelsen(email, passwd, deleteAllOldTempImages, lossless) {
                                             },
                                             data: qs.stringify({
                                                 grant_type: "authorization_code",
-                                                //redirect_uri: "https://mein.cornelsen.de",
-                                                redirect_uri: "https://unterrichtsmanager.cornelsen.de/index.html",
+                                                redirect_uri: "https://mein.cornelsen.de",
                                                 code: code,
                                                 code_verifier: code_verifier,
                                                 client_id: clientId,
