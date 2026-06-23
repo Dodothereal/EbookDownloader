@@ -53,14 +53,21 @@ function clicknteach(email, passwd, deleteAllOldTempImages) {
         if (root.innerHTML.includes("Ungültige E-Mail oder Passwort.")) {
             throw new Error("Incorrect mail address or password!");
         }
+        // Owned books link to the in-app reader (/Player/id/…); catalog entries the
+        // account does NOT own only carry a "Kaufen" (buy) link to the ccbuchner.de shop.
+        // Pick the player link so unowned catalog titles aren't listed — selecting one
+        // would open a shop page with no PDFBookPublic viewer and fail.
         const books = root.querySelectorAll(".bookItem").map(book => {
-            return {
+            const playerLink = book.querySelectorAll("a")
+                .map(a => a.getAttribute("href"))
+                .find(href => href && /\/Player\//i.test(href));
+            return playerLink ? {
                 title: book.querySelector(".title").text,
-                link: getUrl(book.querySelector("a").getAttribute("href")),
-            }
-        });
+                link: getUrl(playerLink),
+            } : null;
+        }).filter(Boolean);
         if (books.length == 0) {
-            throw new Error("No books found!");
+            throw new Error("No owned books found (only catalog / 'Kaufen' entries)!");
         }
         var book = (await prompts([{
             type: "select",
